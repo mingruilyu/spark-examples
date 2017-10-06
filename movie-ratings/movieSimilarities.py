@@ -4,7 +4,7 @@ from math import sqrt
 
 def loadMovieNames():
     movieNames = {}
-    with open("/home/hduser/u.item") as f:
+    with open("u.item") as f:
         for line in f:
             fields = line.split('|')
             movieNames[int(fields[0])] = fields[1]
@@ -17,7 +17,9 @@ def removeDuplicate(tuplePair):
 def lookupSimilarMovie(pairRating):
     m1, m2 = pairRating[0]
     score, count = pairRating[1]
-    return (m1 == movieID or m2 == movieID) and score > scoreThreshold and count > coOccurenceThreshold
+    return (m1 == movieID or m2 == movieID) and \
+        score > scoreThreshold and \
+        count > coOccurenceThreshold
 
 def generateMoviePair(data):
     movie1, rating1 = data[1][0]
@@ -37,24 +39,37 @@ def cosineSimilarity(ratingPairs):
     return (score, len(ratingPairs))
 
 conf = SparkConf().setMaster("local[*]").setAppName("MovieSimilarities")
+#conf = SparkConf().setAppName("MovieSimilarities")
 sc = SparkContext(conf = conf)
 
-data = sc.textFile("file:///home/hduser/u.data")
+data = sc.textFile("file:///home/hduser/projects/spark/movie-ratings/u.data")
 
 print("\nLoading movie names...")
 nameDict = loadMovieNames()
 
 # Map ratings to key / value pairs: user ID => movie ID, rating
-ratingsByMovie = data.map(lambda line: line.split()).map(
-        lambda parts: (int(parts[0]), (int(parts[1]), float(parts[2]))))
-ratingsByMoviePair = ratingsByMovie.join(ratingsByMovie).filter(removeDuplicate)
-# At this point our RDD consists of userID => ((movieID, rating), (movieID, rating))
-# Now key by (movie1, movie2) => (rating1, rating2) pairs.
+ratingsByMovie = data.map(lambda line: line.split())\
+                     .map(lambda parts:
+                            (
+                                int(parts[0]),
+                                (
+                                    int(parts[1]),
+                                    float(parts[2])
+                                )
+                            ))
+ratingPartitioned = ratingsByMovie.partitionBy(100)
+ratingsByMoviePair = ratingsByMovie.join(ratingPartitioned)\
+                                   .filter(removeDuplicate)
+# At this point our RDD consists of
+#   userID => ((movieID, rating), (movieID, rating))
+# Now key by
+#   (movie1, movie2) => (rating1, rating2) pairs.
 moviePairRatingPairs = ratingsByMoviePair.map(generateMoviePair)
 # We now have (movie1, movie2) => (rating1, rating2)
 # Now collect all ratings for each movie pair and compute similarity
 moviePairRatings = moviePairRatingPairs.groupByKey()
-# We now have (movie1, movie2) = > (rating1, rating2), (rating1, rating2) ...
+# We now have
+#   (movie1, movie2) => (rating1, rating2), (rating1, rating2) ...
 # Can now compute similarities.
 moviePairSimilarities = moviePairRatings.mapValues(cosineSimilarity).cache()
 
@@ -65,7 +80,9 @@ movieID = int(sys.argv[1])
 
 lookupResults = moviePairSimilarities.filter(lookupSimilarMovie)
 
-results = lookupResults.map(lambda pairSim: (pairSim[1], pairSim[0])).sortByKey(ascending=False).take(10)
+results = lookupResults.map(
+        lambda pairSim: (pairSim[1], pairSim[0]))\
+                       .sortByKey(ascending=False).take(10)
 
 print("Top 10 similar movies for " + nameDict[movieID])
 for result in results:
